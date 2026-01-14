@@ -1,4 +1,6 @@
 // app/api/todos/route.ts
+export const runtime = "nodejs";
+
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { getDb, resolveUserNamesByIds } from "@/lib/db";
@@ -9,10 +11,6 @@ function isValidStatus(s: unknown): s is TodoStatus {
   return STATUSES.includes(s as TodoStatus);
 }
 
-function nowIso() {
-  return new Date().toISOString();
-}
-
 export async function GET(req: Request) {
   const session = await auth.api.getSession({ headers: req.headers });
   if (!session) return NextResponse.json({ message: "Unauthorized" }, { status: 401 });
@@ -20,21 +18,24 @@ export async function GET(req: Request) {
   const role = session.user.role;
   const userId = session.user.id;
 
-  const db = getDb();
+  const db = await getDb();
 
-  // User: only own todos | Manager/Admin: all todos
-  const rows =
+  const result =
     role === "user"
-      ? (db.prepare(`SELECT * FROM todos WHERE ownerId = ? ORDER BY updatedAt DESC`).all(userId) as any[])
-      : (db.prepare(`SELECT * FROM todos ORDER BY updatedAt DESC`).all() as any[]);
+      ? await db.query(`SELECT * FROM todos WHERE "ownerId" = $1 ORDER BY "updatedAt" DESC`, [userId])
+      : await db.query(`SELECT * FROM todos ORDER BY "updatedAt" DESC`);
 
-  // Add ownerName for UI display (especially useful for manager/admin)
+  const rows = result.rows;
+
   const ownerIds = rows.map((r) => String(r.ownerId));
-  const nameMap = resolveUserNamesByIds(db, ownerIds);
+  const nameMap = await resolveUserNamesByIds(db, ownerIds);
 
-  const withOwnerName = rows.map((t) => ({
+  const withOwnerName = rows.map((t: any) => ({
     ...t,
     ownerName: nameMap[t.ownerId] ?? null,
+    // normalize timestamptz to string
+    createdAt: t.createdAt instanceof Date ? t.createdAt.toISOString() : String(t.createdAt),
+    updatedAt: t.updatedAt instanceof Date ? t.updatedAt.toISOString() : String(t.updatedAt),
   }));
 
   return NextResponse.json(withOwnerName);
@@ -47,7 +48,6 @@ export async function POST(req: Request) {
   const role = session.user.role;
   const userId = session.user.id;
 
-  // Only "user" can create todos
   if (role !== "user") {
     return NextResponse.json({ message: "Forbidden: cannot create todos" }, { status: 403 });
   }
@@ -59,7 +59,6 @@ export async function POST(req: Request) {
     return NextResponse.json({ message: "Invalid JSON body" }, { status: 400 });
   }
 
-  // Basic input validation
   const title = typeof body.title === "string" ? body.title.trim() : "";
   if (!title) return NextResponse.json({ message: "Title cannot be empty" }, { status: 400 });
 
@@ -68,20 +67,29 @@ export async function POST(req: Request) {
   const status = body.status ?? "draft";
   if (!isValidStatus(status)) return NextResponse.json({ message: "Invalid status" }, { status: 400 });
 
-  const db = getDb();
+  const db = await getDb();
 
   const id = crypto.randomUUID();
-  const createdAt = nowIso();
 
-  db.prepare(
-    `INSERT INTO todos (id, title, description, status, ownerId, createdAt, updatedAt)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).run(id, title, description, status, userId, createdAt, createdAt);
+  const inserted = await db.query(
+    `
+    INSERT INTO todos (id, title, description, status, "ownerId")
+    VALUES ($1, $2, $3, $4, $5)
+    RETURNING *
+  `,
+    [id, title, description, status, userId]
+  );
 
-  const created = db.prepare(`SELECT * FROM todos WHERE id = ?`).get(id) as any;
-
-  // Creator name comes from session (role is not client-controlled)
+  const created = inserted.rows[0] as any;
   const ownerName = (session.user.name ?? null) as string | null;
 
-  return NextResponse.json({ ...created, ownerName }, { status: 201 });
+  return NextResponse.json(
+    {
+      ...created,
+      ownerName,
+      createdAt: created.createdAt instanceof Date ? created.createdAt.toISOString() : String(created.createdAt),
+      updatedAt: created.updatedAt instanceof Date ? created.updatedAt.toISOString() : String(created.updatedAt),
+    },
+    { status: 201 }
+  );
 }

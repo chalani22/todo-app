@@ -1,4 +1,6 @@
 // app/api/todos/[id]/route.ts
+export const runtime = "nodejs";
+
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { getDb, resolveUserNamesByIds } from "@/lib/db";
@@ -16,18 +18,17 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
   const role = session.user.role;
   const userId = session.user.id;
 
-  // Only "user" can update todos (manager/admin are read-only for updates)
   if (role !== "user") {
     return NextResponse.json({ message: "Forbidden: cannot update todos" }, { status: 403 });
   }
 
   const { id } = await ctx.params;
-  const db = getDb();
+  const db = await getDb();
 
-  const existing = db.prepare(`SELECT * FROM todos WHERE id = ?`).get(id) as any;
+  const existingRes = await db.query(`SELECT * FROM todos WHERE id = $1`, [id]);
+  const existing = existingRes.rows[0] as any;
   if (!existing) return NextResponse.json({ message: "Todo not found" }, { status: 404 });
 
-  // A user can only update their own todos
   if (existing.ownerId !== userId) {
     return NextResponse.json({ message: "Forbidden: not your todo" }, { status: 403 });
   }
@@ -39,7 +40,6 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
     return NextResponse.json({ message: "Invalid JSON body" }, { status: 400 });
   }
 
-  // Collect only valid updates (ignore unknown fields)
   const updates: Record<string, any> = {};
 
   if (typeof body.title === "string") {
@@ -53,9 +53,7 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
   }
 
   if (body.status !== undefined) {
-    if (!isValidStatus(body.status)) {
-      return NextResponse.json({ message: "Invalid status" }, { status: 400 });
-    }
+    if (!isValidStatus(body.status)) return NextResponse.json({ message: "Invalid status" }, { status: 400 });
     updates.status = body.status;
   }
 
@@ -63,26 +61,33 @@ export async function PATCH(req: Request, ctx: { params: Promise<{ id: string }>
     return NextResponse.json({ message: "No valid fields to update" }, { status: 400 });
   }
 
-  // Always refresh updatedAt when a record changes
+  // Always refresh updatedAt
   updates.updatedAt = new Date().toISOString();
 
-  // Build SET clause from approved keys
-  const setClause = Object.keys(updates)
-    .map((k) => `${k} = ?`)
-    .join(", ");
+  // Build dynamic UPDATE with $ params
+  const keys = Object.keys(updates);
+  const setClause = keys.map((k, i) => `"${k}" = $${i + 1}`).join(", ");
+  const values = keys.map((k) => updates[k]);
+  values.push(id);
 
-  const values = [...Object.values(updates), id];
-  db.prepare(`UPDATE todos SET ${setClause} WHERE id = ?`).run(...values);
+  const updatedRes = await db.query(
+    `UPDATE todos SET ${setClause} WHERE id = $${values.length} RETURNING *`,
+    values
+  );
 
-  const updated = db.prepare(`SELECT * FROM todos WHERE id = ?`).get(id) as any;
+  const updated = updatedRes.rows[0] as any;
 
-  // Attach ownerName for UI display (manager/admin lists also use this shape)
   const ownerName =
     updated.ownerId === userId
       ? ((session.user.name ?? null) as string | null)
-      : resolveUserNamesByIds(db, [updated.ownerId])[updated.ownerId] ?? null;
+      : (await resolveUserNamesByIds(db, [updated.ownerId]))[updated.ownerId] ?? null;
 
-  return NextResponse.json({ ...updated, ownerName });
+  return NextResponse.json({
+    ...updated,
+    ownerName,
+    createdAt: updated.createdAt instanceof Date ? updated.createdAt.toISOString() : String(updated.createdAt),
+    updatedAt: updated.updatedAt instanceof Date ? updated.updatedAt.toISOString() : String(updated.updatedAt),
+  });
 }
 
 export async function DELETE(req: Request, ctx: { params: Promise<{ id: string }> }) {
@@ -93,23 +98,21 @@ export async function DELETE(req: Request, ctx: { params: Promise<{ id: string }
   const userId = session.user.id;
 
   const { id } = await ctx.params;
-  const db = getDb();
+  const db = await getDb();
 
-  const existing = db.prepare(`SELECT * FROM todos WHERE id = ?`).get(id) as any;
+  const existingRes = await db.query(`SELECT * FROM todos WHERE id = $1`, [id]);
+  const existing = existingRes.rows[0] as any;
   if (!existing) return NextResponse.json({ message: "Todo not found" }, { status: 404 });
 
-  // Admin can delete any todo (any status)
   if (role === "admin") {
-    db.prepare(`DELETE FROM todos WHERE id = ?`).run(id);
+    await db.query(`DELETE FROM todos WHERE id = $1`, [id]);
     return NextResponse.json({ message: "Deleted" });
   }
 
-  // Manager cannot delete
   if (role === "manager") {
     return NextResponse.json({ message: "Forbidden: cannot delete todos" }, { status: 403 });
   }
 
-  // User can delete only their own todos, and only when status = "draft"
   if (existing.ownerId !== userId) {
     return NextResponse.json({ message: "Forbidden: not your todo" }, { status: 403 });
   }
@@ -118,6 +121,6 @@ export async function DELETE(req: Request, ctx: { params: Promise<{ id: string }
     return NextResponse.json({ message: "Forbidden: can only delete draft todos" }, { status: 403 });
   }
 
-  db.prepare(`DELETE FROM todos WHERE id = ?`).run(id);
+  await db.query(`DELETE FROM todos WHERE id = $1`, [id]);
   return NextResponse.json({ message: "Deleted" });
 }

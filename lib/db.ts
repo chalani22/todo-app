@@ -1,89 +1,115 @@
 // lib/db.ts
-import Database from "better-sqlite3";
+import { Pool } from "pg";
 import { TODOS_SCHEMA_SQL } from "@/lib/todos.schema";
 
-type DB = InstanceType<typeof Database>;
-
-let _db: DB | null = null;
+let _pool: Pool | null = null;
+let _schemaReady = false;
 
 // Cached user table info (detected once per process)
 let _userTableInfo: { table: string; nameCol: string } | null | undefined = undefined;
 
-// Local dev: keep using ./sqlite.db in project root.
-function getSqlitePath() {
-  if (process.env.VERCEL) return "/tmp/sqlite.db";
-  return "./sqlite.db";
+function getPool() {
+  if (_pool) return _pool;
+
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) throw new Error("Missing DATABASE_URL (set it in .env.local and Vercel env vars)");
+
+  // Neon requires SSL; connection string includes sslmode=require, but we enforce ssl anyway
+  _pool = new Pool({
+    connectionString,
+    ssl: { rejectUnauthorized: false },
+    max: 5,
+  });
+
+  return _pool;
 }
 
-// Quote identifiers safely for SQLite (table/column names)
+// Run todos DDL once per server process
+async function ensureTodosSchema(pool: Pool) {
+  if (_schemaReady) return;
+  await pool.query(TODOS_SCHEMA_SQL);
+  _schemaReady = true;
+}
+
+// Quote identifiers safely for Postgres (table/column names)
 function qIdent(name: string) {
-  return `"${name.replace(/"/g, '""')}"`;
+  return `"${String(name).replace(/"/g, '""')}"`;
 }
 
-// Best-effort detection of the Better Auth user table + its name column
-function detectUserTable(db: DB): { table: string; nameCol: string } | null {
-  const tables = db
-    .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`)
-    .all() as Array<{ name: string }>;
-
+// Best-effort detection of Better Auth user table + name column in Postgres
+async function detectUserTable(pool: Pool): Promise<{ table: string; nameCol: string } | null> {
   const nameCandidates = ["name", "displayName", "fullName", "username"];
 
-  for (const t of tables) {
-    let cols: Array<{ name: string }> = [];
-    try {
-      cols = db.prepare(`PRAGMA table_info(${qIdent(t.name)})`).all() as any;
-    } catch {
-      continue;
-    }
+  // Common Better Auth table name is "user" (reserved word, needs quoting)
+  // We'll also try to detect generically via information_schema
+  const tablesRes = await pool.query<{
+    table_name: string;
+  }>(
+    `
+    SELECT table_name
+    FROM information_schema.tables
+    WHERE table_schema = 'public'
+      AND table_type = 'BASE TABLE'
+  `
+  );
 
-    const colNames = cols.map((c) => String(c.name));
-    const lower = new Set(colNames.map((c) => c.toLowerCase()));
+  for (const row of tablesRes.rows) {
+    const table = row.table_name;
 
-    // Require "id" column so we can map by user id
+    const colsRes = await pool.query<{ column_name: string }>(
+      `
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = $1
+    `,
+      [table]
+    );
+
+    const cols = colsRes.rows.map((r) => r.column_name);
+    const lower = new Set(cols.map((c) => c.toLowerCase()));
+
     if (!lower.has("id")) continue;
 
-    // Find a name-like column
     const foundName = nameCandidates.find((cand) => lower.has(cand.toLowerCase()));
     if (!foundName) continue;
 
-    return { table: t.name, nameCol: foundName };
+    return { table, nameCol: foundName };
   }
 
   return null;
 }
 
 // Maps userId -> name by querying the detected user table
-export function resolveUserNamesByIds(db: DB, userIds: string[]): Record<string, string | null> {
+export async function resolveUserNamesByIds(
+  pool: Pool,
+  userIds: string[]
+): Promise<Record<string, string | null>> {
   const ids = Array.from(new Set(userIds.filter(Boolean)));
   if (ids.length === 0) return {};
 
-  // Detect the user table only once (per server process)
   if (_userTableInfo === undefined) {
-    _userTableInfo = detectUserTable(db);
+    _userTableInfo = await detectUserTable(pool);
   }
   if (_userTableInfo === null) return {};
 
   const { table, nameCol } = _userTableInfo;
 
-  const placeholders = ids.map(() => "?").join(", ");
-  const sql = `SELECT id, ${qIdent(nameCol)} as name FROM ${qIdent(table)} WHERE id IN (${placeholders})`;
+  // Use = ANY($1) for array parameter
+  const sql = `SELECT id, ${qIdent(nameCol)} as name FROM ${qIdent(table)} WHERE id = ANY($1::text[])`;
 
   try {
-    const rows = db.prepare(sql).all(...ids) as Array<{ id: string; name: string | null }>;
+    const rows = await pool.query<{ id: string; name: string | null }>(sql, [ids]);
     const map: Record<string, string | null> = {};
-    for (const r of rows) map[r.id] = r.name ?? null;
+    for (const r of rows.rows) map[r.id] = r.name ?? null;
     return map;
   } catch {
     return {};
   }
 }
 
-// Lazy singleton connection + schema initialization
-export function getDb() {
-  if (!_db) {
-    _db = new Database(getSqlitePath());
-    _db.pragma("journal_mode = WAL");
-    _db.exec(TODOS_SCHEMA_SQL);
-  }
-  return _db;
+// Public helper used by API routes
+export async function getDb() {
+  const pool = getPool();
+  await ensureTodosSchema(pool);
+  return pool;
 }
