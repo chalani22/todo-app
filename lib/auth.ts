@@ -5,14 +5,7 @@ import { Pool } from "pg";
 
 export type Role = "user" | "manager" | "admin";
 
-/**
- * Build the canonical app URL in a Vercel-safe way.
- * - On Vercel: VERCEL_URL is like "my-app.vercel.app" (no protocol)
- * - Locally: fallback to http://localhost:3000
- */
 function getAppBaseURL() {
-  // If you set BETTER_AUTH_URL explicitly (recommended for your production custom domain),
-  // it will override VERCEL_URL.
   const envUrl = process.env.BETTER_AUTH_URL;
 
   if (envUrl && envUrl.trim()) return envUrl.replace(/\/$/, "");
@@ -40,20 +33,8 @@ const pool = new Pool({
 export const auth = betterAuth({
   baseURL,
   secret,
-
-  // ✅ Postgres Pool
   database: pool,
-
-  /**
-   * ✅ This fixes your Vercel issue:
-   * Better Auth rejects requests when Origin doesn't match.
-   * We trust:
-   * - localhost for dev
-   * - the computed baseURL (current deployment)
-   * - any Vercel preview deployment under *.vercel.app
-   *
-   * Wildcards are supported by Better Auth. :contentReference[oaicite:0]{index=0}
-   */
+  
   trustedOrigins: [
     "http://localhost:3000",
     baseURL,
@@ -71,7 +52,7 @@ export const auth = betterAuth({
         type: ["user", "manager", "admin"],
         required: false,
         defaultValue: "user",
-        input: false, // cannot be client-controlled
+        input: false, 
       },
     },
   },

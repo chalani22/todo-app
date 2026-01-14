@@ -14,7 +14,6 @@ function getPool() {
   const connectionString = process.env.DATABASE_URL;
   if (!connectionString) throw new Error("Missing DATABASE_URL (set it in .env.local and Vercel env vars)");
 
-  // Neon requires SSL; connection string includes sslmode=require, but we enforce ssl anyway
   _pool = new Pool({
     connectionString,
     ssl: { rejectUnauthorized: false },
