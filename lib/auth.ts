@@ -9,15 +9,19 @@ const baseURL = process.env.BETTER_AUTH_URL ?? "http://localhost:3000";
 const secret = process.env.BETTER_AUTH_SECRET;
 
 if (!secret) {
-  throw new Error("Missing BETTER_AUTH_SECRET in .env.local");
+  throw new Error("Missing BETTER_AUTH_SECRET (set it in .env.local and Vercel env vars)");
+}
+
+function getSqlitePath() {
+  if (process.env.VERCEL) return "/tmp/sqlite.db";
+  return "./sqlite.db";
 }
 
 export const auth = betterAuth({
   baseURL,
   secret,
 
-  // SQLite db file in project root
-  database: new Database("./sqlite.db"),
+  database: new Database(getSqlitePath()),
 
   emailAndPassword: {
     enabled: true,

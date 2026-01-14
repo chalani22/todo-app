@@ -9,6 +9,12 @@ let _db: DB | null = null;
 // Cached user table info (detected once per process)
 let _userTableInfo: { table: string; nameCol: string } | null | undefined = undefined;
 
+// Local dev: keep using ./sqlite.db in project root.
+function getSqlitePath() {
+  if (process.env.VERCEL) return "/tmp/sqlite.db";
+  return "./sqlite.db";
+}
+
 // Quote identifiers safely for SQLite (table/column names)
 function qIdent(name: string) {
   return `"${name.replace(/"/g, '""')}"`;
@@ -75,7 +81,7 @@ export function resolveUserNamesByIds(db: DB, userIds: string[]): Record<string,
 // Lazy singleton connection + schema initialization
 export function getDb() {
   if (!_db) {
-    _db = new Database("./sqlite.db");
+    _db = new Database(getSqlitePath());
     _db.pragma("journal_mode = WAL");
     _db.exec(TODOS_SCHEMA_SQL);
   }
