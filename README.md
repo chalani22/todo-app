@@ -26,3 +26,14 @@ A role-based Todo application that demonstrates Attribute-Based Access Control (
 npm install
 npx prisma migrate dev
 npm run dev
+
+
+## Live Demo
+Deployed on Vercel: https://todo-app-delta-cyan-39.vercel.app/
+
+## Test Accounts
+> Password for all accounts: `abcd@1234`
+
+- **User:** `chalani@gmail.com`
+- **Manager:** `manager@gmail.com`
+- **Admin:** `admin@gmail.com`
