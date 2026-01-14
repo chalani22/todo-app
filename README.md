@@ -21,13 +21,6 @@ A role-based Todo application that demonstrates Attribute-Based Access Control (
 - **Manager**: view all todos; cannot create/update/delete
 - **Admin**: view all todos; can delete any todo regardless of status; cannot create/update
 
-## How to Run
-```bash
-npm install
-npx prisma migrate dev
-npm run dev
-
-
 ## Live Demo
 Deployed on Vercel: https://todo-app-delta-cyan-39.vercel.app/
 
@@ -37,3 +30,12 @@ Deployed on Vercel: https://todo-app-delta-cyan-39.vercel.app/
 - **User:** `chalani@gmail.com`
 - **Manager:** `manager@gmail.com`
 - **Admin:** `admin@gmail.com`
+
+## How to Run
+```bash
+npm install
+npx prisma migrate dev
+npm run dev
+
+
+
