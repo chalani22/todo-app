@@ -1,32 +1,64 @@
 // lib/auth.ts
 import { betterAuth } from "better-auth";
-import { Pool } from "pg";
 import { customSession, jwt } from "better-auth/plugins";
+import { Pool } from "pg";
 
 export type Role = "user" | "manager" | "admin";
 
-const baseURL = process.env.BETTER_AUTH_URL ?? "http://localhost:3000";
+/**
+ * Build the canonical app URL in a Vercel-safe way.
+ * - On Vercel: VERCEL_URL is like "my-app.vercel.app" (no protocol)
+ * - Locally: fallback to http://localhost:3000
+ */
+function getAppBaseURL() {
+  // If you set BETTER_AUTH_URL explicitly (recommended for your production custom domain),
+  // it will override VERCEL_URL.
+  const envUrl = process.env.BETTER_AUTH_URL;
+
+  if (envUrl && envUrl.trim()) return envUrl.replace(/\/$/, "");
+
+  // Vercel preview/prod deployments
+  const vercelUrl = process.env.VERCEL_URL;
+  if (vercelUrl && vercelUrl.trim()) return `https://${vercelUrl.replace(/\/$/, "")}`;
+
+  // Local dev
+  return "http://localhost:3000";
+}
+
+const baseURL = getAppBaseURL();
 const secret = process.env.BETTER_AUTH_SECRET;
 
-if (!secret) {
-  throw new Error("Missing BETTER_AUTH_SECRET");
-}
-if (!process.env.DATABASE_URL) {
-  throw new Error("Missing DATABASE_URL");
-}
+if (!secret) throw new Error("Missing BETTER_AUTH_SECRET");
+if (!process.env.DATABASE_URL) throw new Error("Missing DATABASE_URL");
 
-// ✅ Single Postgres pool (safe for Vercel)
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
+  max: 5,
 });
 
 export const auth = betterAuth({
   baseURL,
   secret,
 
-  // 🔥 THIS IS THE KEY FIX
+  // ✅ Postgres Pool
   database: pool,
+
+  /**
+   * ✅ This fixes your Vercel issue:
+   * Better Auth rejects requests when Origin doesn't match.
+   * We trust:
+   * - localhost for dev
+   * - the computed baseURL (current deployment)
+   * - any Vercel preview deployment under *.vercel.app
+   *
+   * Wildcards are supported by Better Auth. :contentReference[oaicite:0]{index=0}
+   */
+  trustedOrigins: [
+    "http://localhost:3000",
+    baseURL,
+    "https://*.vercel.app",
+  ],
 
   emailAndPassword: {
     enabled: true,
@@ -39,7 +71,7 @@ export const auth = betterAuth({
         type: ["user", "manager", "admin"],
         required: false,
         defaultValue: "user",
-        input: false,
+        input: false, // cannot be client-controlled
       },
     },
   },
@@ -47,14 +79,7 @@ export const auth = betterAuth({
   plugins: [
     customSession(async ({ user, session }) => {
       const role = (user as unknown as { role?: Role }).role ?? "user";
-
-      return {
-        user: {
-          ...user,
-          role,
-        },
-        session,
-      };
+      return { user: { ...user, role }, session };
     }),
     jwt(),
   ],
